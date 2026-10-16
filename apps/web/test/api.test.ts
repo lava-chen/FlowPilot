@@ -1,7 +1,12 @@
+import type { AddressInfo } from 'node:net';
+import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { FlowPilotDb, migrate, seed, DEMO_ORG_ID } from '@flowpilot/database';
 import { createCoreServices, issueSessionToken, type CoreServices } from '@flowpilot/core';
 import { InboxTriggerService } from '@flowpilot/integrations';
+import { createMcpApp } from '@flowpilot/mcp/app';
 import type { Actor } from '@flowpilot/domain';
 import { getEnv, resetEnvCache } from '@flowpilot/shared';
 
@@ -197,6 +202,152 @@ describe('HTTP API', () => {
 
     // Read the row back from the database rather than trusting the responses.
     expect((await db.repos.tasks.require(DEMO_ORG_ID, taskId!)).status).toBe('completed');
+  });
+
+  it('runs one request from simulated email through MCP, human approval, client sign-off, and activity', async () => {
+    const owner = await actorFor('dana@northlinecreative.com');
+    const manager = await actorFor('marcus@northlinecreative.com');
+    // Earlier API tests exercise saving a remote provider; reset this throwaway tenant to the
+    // deterministic analyzer so this end-to-end flow remains offline and reproducible.
+    await core.aiSettings.save(manager, { provider: 'deterministic' });
+    const credential = await core.credentials.create(owner, {
+      name: 'Cross-surface E2E agent',
+      scopes: ['projects:read', 'requests:read', 'requests:write', 'tasks:read', 'tasks:write'],
+    });
+    const app = createMcpApp({ core, authenticate: (value) => core.credentials.authenticate(value) });
+    let server: Server | undefined;
+    let agent: Client | undefined;
+
+    try {
+      await new Promise<void>((resolve) => {
+        server = app.listen(0, resolve);
+      });
+      const { port } = server.address() as AddressInfo;
+      agent = new Client({ name: 'flowpilot-cross-surface-e2e', version: '0.1.0' });
+      await agent.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+          requestInit: { headers: { Authorization: `Bearer ${credential.token}` } },
+        }),
+      );
+
+      const dashboardHeaders = await sessionHeaders('marcus@northlinecreative.com');
+      const { POST: simulateEmail } = await import('@/app/api/integrations/mock-email/route');
+      const simulated = await simulateEmail(new Request('http://localhost/api/integrations/mock-email', {
+        method: 'POST',
+        headers: dashboardHeaders,
+        body: json({ templateId: 'harbor-logo', autoCreateDraft: false }),
+      }));
+      expect(simulated.status).toBe(200);
+      const requestId = ((await simulated.json()) as { request: { id: string } }).request.id;
+
+      const listed = await agent.callTool({ name: 'list_requests', arguments: { status: ['new'] } });
+      expect(listed.isError).toBeFalsy();
+      const listedBody = JSON.parse(listed.content[0]!.text!) as { requests: Array<{ id: string }> };
+      expect(listedBody.requests.some((request) => request.id === requestId)).toBe(true);
+
+      const analyzed = await agent.callTool({ name: 'analyze_request', arguments: { requestId } });
+      expect(analyzed.isError).toBeFalsy();
+      const analyzedBody = JSON.parse(analyzed.content[0]!.text!) as {
+        analyzed: number;
+        requests: Array<{ id: string; analysis: { projectId: string | null } }>;
+      };
+      expect(analyzedBody.analyzed, JSON.stringify(analyzedBody.errors)).toBe(1);
+      expect(analyzedBody.requests[0]).toMatchObject({ id: requestId, analysis: { projectId: expect.any(String) } });
+
+      const drafted = await agent.callTool({ name: 'create_task_draft', arguments: { requestId } });
+      expect(drafted.isError).toBeFalsy();
+      const draftBody = JSON.parse(drafted.content[0]!.text!) as {
+        task: { id: string; status: string };
+        requiresHumanConfirmation: boolean;
+      };
+      const taskId = draftBody.task.id;
+      expect(draftBody).toMatchObject({ task: { status: 'draft' }, requiresHumanConfirmation: true });
+      expect((await agent.listTools()).tools.map((tool) => tool.name)).not.toContain('approve_task');
+
+      const queued = await agent.callTool({ name: 'request_task_approval', arguments: { taskId } });
+      expect(queued.isError).toBeFalsy();
+      expect(JSON.parse(queued.content[0]!.text!).task.status).toBe('pending_approval');
+
+      const params = Promise.resolve({ id: taskId });
+      const { PATCH: updateTask } = await import('@/app/api/tasks/[id]/route');
+      const assigned = await updateTask(new Request(`http://localhost/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: dashboardHeaders,
+        body: json({ assigneeId: 'usr_theo' }),
+      }), { params });
+      expect(assigned.status).toBe(200);
+
+      const { POST: approve } = await import('@/app/api/tasks/[id]/approve/route');
+      const approved = await approve(new Request(`http://localhost/api/tasks/${taskId}/approve`, {
+        method: 'POST',
+        headers: dashboardHeaders,
+        body: json({ decision: 'approved', note: 'Approved by the project manager.' }),
+      }), { params });
+      expect(approved.status).toBe(200);
+      expect(((await approved.json()) as { task: { status: string } }).task.status).toBe('ready');
+
+      const { POST: taskOperation } = await import('@/app/api/tasks/[id]/operations/route');
+      const checklistResponse = await taskOperation(new Request(`http://localhost/api/tasks/${taskId}/operations`, {
+        method: 'POST', headers: dashboardHeaders, body: json({ operation: 'add_checklist', title: 'Check logo scale and end-card duration' }),
+      }), { params });
+      expect(checklistResponse.status).toBe(200);
+      const checklistId = ((await checklistResponse.json()) as { item: { id: string } }).item.id;
+
+      const { POST: transition } = await import('@/app/api/tasks/[id]/transition/route');
+      const move = async (to: string) => transition(new Request(`http://localhost/api/tasks/${taskId}/transition`, {
+        method: 'POST', headers: dashboardHeaders, body: json({ to }),
+      }), { params });
+      expect((await move('in_progress')).status).toBe(200);
+
+      const checklistDone = await taskOperation(new Request(`http://localhost/api/tasks/${taskId}/operations`, {
+        method: 'POST', headers: dashboardHeaders,
+        body: json({ operation: 'update_checklist', itemId: checklistId, isComplete: true }),
+      }), { params });
+      expect(checklistDone.status).toBe(200);
+
+      const deliveryLink = await taskOperation(new Request(`http://localhost/api/tasks/${taskId}/operations`, {
+        method: 'POST', headers: dashboardHeaders,
+        body: json({ operation: 'add_link', label: 'Final review cut', url: 'https://example.com/harbor-final-cut', kind: 'delivery' }),
+      }), { params });
+      expect(deliveryLink.status).toBe(200);
+      expect((await move('in_review')).status).toBe(200);
+
+      const reviewRequested = await taskOperation(new Request(`http://localhost/api/tasks/${taskId}/operations`, {
+        method: 'POST', headers: dashboardHeaders, body: json({ operation: 'request_client_review' }),
+      }), { params });
+      expect(reviewRequested.status).toBe(200);
+      const reviewUrl = ((await reviewRequested.json()) as { url: string }).url;
+      const reviewToken = new URL(reviewUrl).pathname.split('/').at(-1)!;
+
+      const { GET: clientPortal, POST: clientDecision } = await import('@/app/api/client-review/[token]/route');
+      const portal = await clientPortal(new Request(reviewUrl), { params: Promise.resolve({ token: reviewToken }) });
+      expect(portal.status).toBe(200);
+      expect(JSON.stringify(await portal.json())).toContain('Final review cut');
+
+      const clientAccepted = await clientDecision(new Request(reviewUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: json({ decision: 'approved', reviewerName: 'Alice Nguyen', reviewerEmail: 'alice@harborcoffee.com' }),
+      }), { params: Promise.resolve({ token: reviewToken }) });
+      expect(clientAccepted.status).toBe(200);
+      expect((await move('completed')).status).toBe(200);
+      expect((await db.repos.tasks.require(DEMO_ORG_ID, taskId)).status).toBe('completed');
+
+      const { GET: activity } = await import('@/app/api/activity/route');
+      const activityResponse = await activity(new Request('http://localhost/api/activity', { headers: dashboardHeaders }));
+      expect(activityResponse.status).toBe(200);
+      const activityBody = await activityResponse.json() as { audit: Array<{ action: string; entityId: string; actorKind: string }> };
+      const taskActions = activityBody.audit.filter((event) => event.entityId === taskId).map((event) => event.action);
+      expect(taskActions).toEqual(expect.arrayContaining([
+        'task.draft_created', 'approval.decided', 'task.start', 'task.submit', 'task.complete', 'task.client_review_approved',
+      ]));
+      expect(activityBody.audit.some((event) => event.entityId === taskId && event.actorKind === 'agent')).toBe(true);
+      expect((await db.repos.audit.list(DEMO_ORG_ID, { limit: 100, entityType: 'request', entityId: requestId }))
+        .map((event) => event.action)).toEqual(expect.arrayContaining(['request.ingested', 'request.analyzed']));
+    } finally {
+      await agent?.close();
+      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
   });
 
   it('returns 409 with the legal transitions when a move is illegal', async () => {

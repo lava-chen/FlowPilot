@@ -55,6 +55,39 @@ describe('OpenAI-compatible analyzer', () => {
     expect(fetchImpl).toHaveBeenCalledWith('https://llm.example/v1/chat/completions', expect.any(Object));
   });
 
+  it('enables MiniMax reasoning separation for both connection checks and analysis', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      const content = body.temperature === 0 ? '{"ok":true}' : JSON.stringify(validResponse);
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleProvider({
+      baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M2.7', fetchImpl,
+    });
+
+    await provider.testConnection();
+    await provider.analyze(input);
+
+    expect(bodies).toHaveLength(2);
+    expect(bodies.every((body) => body.reasoning_split === true)).toBe(true);
+  });
+
+  it('does not send MiniMax-specific options to other OpenAI-compatible services', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), { status: 200 },
+    )) as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleProvider({
+      baseUrl: 'https://llm.example/v1', apiKey: 'test-key', model: 'fixture-model', fetchImpl,
+    });
+
+    await provider.testConnection();
+
+    const body = JSON.parse(String((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body));
+    expect(body).not.toHaveProperty('reasoning_split');
+  });
+
   it('rejects a model that invents an organization member', async () => {
     const fetchImpl = async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ ...validResponse, suggestedAssignee: { ...validResponse.suggestedAssignee, userId: 'usr_outside' } }) } }],

@@ -29,6 +29,12 @@ export class OpenAiCompatibleProvider implements AiProvider {
     this.endpoint = `${this.baseUrl}/chat/completions`;
   }
 
+  private get providerOptions(): { reasoning_split?: boolean } {
+    // MiniMax includes reasoning in message.content by default. Its OpenAI-compatible
+    // API can return the final answer separately when reasoning_split is enabled.
+    return isMiniMaxEndpoint(this.baseUrl) ? { reasoning_split: true } : {};
+  }
+
   /** Sends a minimal structured request without customer data to verify endpoint, key and model. */
   async testConnection(): Promise<void> {
     let response: Response;
@@ -40,6 +46,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
           model: this.model,
           temperature: 0,
           response_format: { type: 'json_object' },
+          ...this.providerOptions,
           messages: [
             { role: 'system', content: 'Return exactly this JSON object: {"ok":true}.' },
             { role: 'user', content: 'Connection check. Return {"ok":true}.' },
@@ -101,6 +108,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
           model: this.model,
           temperature: 0.1,
           response_format: { type: 'json_object' },
+          ...this.providerOptions,
           messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(user) }],
         }),
         signal: AbortSignal.timeout(this.timeoutMs),
@@ -122,6 +130,16 @@ export class OpenAiCompatibleProvider implements AiProvider {
     try { parsed = JSON.parse(content); }
     catch { throw new IntegrationError('The configured AI provider response was not a JSON analysis object.', { provider: this.name }); }
     return parseGroundedAnalysis(parsed, input, this.name, this.model);
+  }
+}
+
+function isMiniMaxEndpoint(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname === 'minimaxi.com' || hostname.endsWith('.minimaxi.com')
+      || hostname === 'minimax.io' || hostname.endsWith('.minimax.io');
+  } catch {
+    return false;
   }
 }
 
