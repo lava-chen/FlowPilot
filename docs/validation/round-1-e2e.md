@@ -26,4 +26,4 @@ MiniMax CN `MiniMax-M2.7` passed both a synthetic connection check and a synthet
 
 This is a local integration test using an in-memory PGlite database. The MCP transport is real, but the test server and Dashboard route handlers run in the same test process. It does not prove that two separately deployed processes share state, that PostgreSQL migrations and RLS are production-ready, or that a real Gmail/Slack/ClickUp connector works. The request intake is simulated, and the customer review response is a test client call rather than an external browser session.
 
-GitHub Actions has been added to the public repository; its first hosted run must complete before CI itself can be reported as remotely verified.
+GitHub Actions is configured to run on pushes to `main`, pull requests, and manual dispatch. The hosted result for the latest commit is available from the repository's Actions tab.

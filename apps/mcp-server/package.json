@@ -17,6 +17,7 @@
     "@flowpilot/shared": "workspace:*"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
