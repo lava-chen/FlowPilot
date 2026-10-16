@@ -1,0 +1,23 @@
+{
+  "name": "@flowpilot/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "agent:token": "tsx src/cli/token.ts"
+  },
+  "dependencies": {
+    "@flowpilot/core": "workspace:*",
+    "@flowpilot/database": "workspace:*",
+    "@flowpilot/domain": "workspace:*",
+    "@flowpilot/mcp": "workspace:*",
+    "@flowpilot/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

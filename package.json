@@ -1,0 +1,32 @@
+{
+  "name": "flowpilot",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @flowpilot/web dev",
+    "dev:stack": "concurrently -n web,mcp -c cyan,magenta \"pnpm --filter @flowpilot/web dev\" \"pnpm --filter @flowpilot/mcp-server dev\"",
+    "dev:web": "pnpm --filter @flowpilot/web dev",
+    "dev:mcp": "pnpm --filter @flowpilot/mcp-server dev",
+    "build": "pnpm typecheck && pnpm --filter @flowpilot/web build",
+    "start": "pnpm --filter @flowpilot/web start",
+    "start:stack": "concurrently -n web,mcp -c cyan,magenta \"pnpm --filter @flowpilot/web start\" \"pnpm --filter @flowpilot/mcp-server start\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "pnpm --filter @flowpilot/database migrate",
+    "db:seed": "pnpm --filter @flowpilot/database seed",
+    "db:reset": "pnpm --filter @flowpilot/database reset"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.8",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

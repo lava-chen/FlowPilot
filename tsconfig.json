@@ -1,0 +1,30 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["apps/web/src/*"],
+      "@flowpilot/shared": ["packages/shared/src/index.ts"],
+      "@flowpilot/shared/*": ["packages/shared/src/*"],
+      "@flowpilot/domain": ["packages/domain/src/index.ts"],
+      "@flowpilot/domain/*": ["packages/domain/src/*"],
+      "@flowpilot/database": ["packages/database/src/index.ts"],
+      "@flowpilot/database/*": ["packages/database/src/*"],
+      "@flowpilot/core": ["packages/core/src/index.ts"],
+      "@flowpilot/core/*": ["packages/core/src/*"],
+      "@flowpilot/integrations": ["packages/integrations/src/index.ts"],
+      "@flowpilot/integrations/*": ["packages/integrations/src/*"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "apps/mcp-server/src/**/*.ts",
+    "apps/web/src/**/*.ts",
+    "apps/web/src/**/*.tsx",
+    "vitest.config.ts"
+  ],
+  "exclude": ["node_modules", "**/.next/**", "**/dist/**"]
+}

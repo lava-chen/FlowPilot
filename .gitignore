@@ -1,0 +1,17 @@
+node_modules/
+.next/
+dist/
+out/
+*.tsbuildinfo
+.env
+.env.local
+.env*.local
+!.env.example
+coverage/
+.DS_Store
+*.log
+.vercel
+
+# Local database and temporary artifacts
+/.data/
+/tmp/

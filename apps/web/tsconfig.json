@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "types": ["node"],
+    "baseUrl": ".",
+    "allowJs": true,
+    "incremental": true,
+    "noEmit": true,
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@flowpilot/shared": ["../../packages/shared/src/index.ts"],
+      "@flowpilot/domain": ["../../packages/domain/src/index.ts"],
+      "@flowpilot/database": ["../../packages/database/src/index.ts"],
+      "@flowpilot/core": ["../../packages/core/src/index.ts"],
+      "@flowpilot/integrations": ["../../packages/integrations/src/index.ts"]
+    }
+  },
+  "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
