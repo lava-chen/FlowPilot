@@ -12,8 +12,9 @@ const KNOWN_PROVIDERS = ['whatsapp-cloud', 'outlook-graph', 'generic-webhook', '
 const UpsertSchema = z.object({
   status: IntegrationCatalogStatusSchema,
   config: z.record(z.string(), z.unknown()).default({}),
-  /** Optional access token for `whatsapp-cloud` — encrypted before storage. */
+  /** Provider access token. Encrypted into `integration_secrets`; never stored in `config`. */
   accessToken: z.string().optional(),
+  /** Provider app secret (WhatsApp HMAC verification). Same treatment as `accessToken`. */
   appSecret: z.string().optional(),
 });
 
@@ -23,9 +24,13 @@ const UpsertSchema = z.object({
  * Body shape:
  *   { status, config, accessToken?, appSecret? }
  *
- * `config` is the structured configuration (phone_number_id, business_account_id, verify_token,
- * api_base, ...). `accessToken` and `appSecret` are *never* echoed back; they live only on the
- * server side and only used for HMAC verification + outbound delivery.
+ * `config` is the non-secret configuration (phoneNumberId, businessAccountId, verifyToken,
+ * apiBase, ...). `accessToken` and `appSecret` are routed to the encrypted
+ * `integration_secrets` store by `IntegrationService.upsert`; they are never written to
+ * `config`, never echoed back, and never logged.
+ *
+ * Omitting `accessToken` / `appSecret` leaves whatever is already stored untouched, so a
+ * settings form that only edits the phone number does not wipe working credentials.
  */
 export async function PUT(request: Request, ctx: { params: Promise<{ provider: string }> }): Promise<Response> {
   try {
@@ -36,8 +41,8 @@ export async function PUT(request: Request, ctx: { params: Promise<{ provider: s
       return Response.json({ error: { code: 'not_found', message: `Unknown provider "${provider}".` } }, { status: 404 });
     }
     const input = await parseBody(request, UpsertSchema);
-    // Compose the persisted config: keep the existing config for the provider, then merge
-    // any incoming update. Access tokens and app secrets go to dedicated fields, not config.
+    // Compose the persisted config: keep the existing non-secret config for the provider, then
+    // merge any incoming update. Secrets travel in their own top-level fields, not in `config`.
     const existing = await getCore().integrations.listConnections(auth.actor).catch(() => []);
     const found = existing.find((c) => c.provider === provider);
     const baseConfig = (found?.config ?? {}) as Record<string, unknown>;
@@ -50,7 +55,11 @@ export async function PUT(request: Request, ctx: { params: Promise<{ provider: s
       status: input.status as IntegrationCatalogStatus,
       config: merged,
     });
-    return ok({ connection: redact(updated) });
+
+    // Report which secrets are configured without disclosing them, so the settings page can
+    // show "token saved" rather than an empty field the operator might think is a failure.
+    const secretNames = await getCore().integrations.listSecretNames(auth.actor.orgId, provider);
+    return ok({ connection: redact(updated), secretsConfigured: secretNames });
   } catch (error) {
     return errorResponse(error);
   }

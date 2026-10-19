@@ -3,13 +3,19 @@ import type { Actor, IntegrationCatalogStatus, IntegrationConnection } from '@fl
 import { newId, NotFoundError, ValidationError, ForbiddenError } from '@flowpilot/shared';
 import { AuditService } from './audit.service.js';
 import { assertCan } from './permissions.js';
+import { encryptSecret, decryptSecret, type SecretContext } from './ai/settings-crypto.js';
 
 /**
- * Integration management: connection CRUD + catalog status projection.
+ * Integration management: connection CRUD + catalog status projection + secret storage.
  *
- * The actual provider secrets live encrypted in `IntegrationConnection.config`. The shape is
- * provider-specific (WhatsApp vs Outlook), so we accept and return `unknown` for the
- * config blob and let the caller (UI / route handler) serialize. We never log `config`.
+ * Non-secret configuration (`phoneNumberId`, `verifyToken`, `apiBase`, ...) lives in
+ * `IntegrationConnection.config` and is safe to echo to the dashboard.
+ *
+ * Secrets (`accessToken`, `appSecret`) do NOT. They are encrypted with a per-secret AES-GCM
+ * key derived from `SESSION_SECRET` and stored in `integration_secrets`; `config` never
+ * receives them. `readSecrets()` is the only server-side path back to plaintext, and it is
+ * deliberately not reachable from any HTTP route — the webhook and the send dispatcher call it
+ * internally after resolving the org from an authenticated context.
  */
 
 export type IntegrationProvider = 'whatsapp-cloud' | 'outlook-graph' | 'generic-webhook' | 'mock-email';
@@ -32,10 +38,25 @@ export interface UpsertIntegrationInput {
   config: Record<string, unknown>;
 }
 
+/**
+ * Canonical secret field names, and the AES-GCM context each one is encrypted under.
+ *
+ * Splitting the contexts means a leaked `accessToken` ciphertext cannot be decrypted with the
+ * app-secret key. Each entry also pins which context is used, so a future field cannot be
+ * added without deliberately choosing its key separation.
+ */
+const SECRET_FIELDS = {
+  accessToken: 'integrationAccessToken',
+  appSecret: 'integrationAppSecret',
+} as const satisfies Record<string, SecretContext>;
+
+export type IntegrationSecretName = keyof typeof SECRET_FIELDS;
+
 export class IntegrationService {
   constructor(
     private readonly db: FlowPilotDb,
     private readonly audit: AuditService,
+    private readonly rootSecret: string,
   ) {}
 
   /** List *all known integrations* for the org, projecting catalog state. */
@@ -96,6 +117,32 @@ export class IntegrationService {
     return this.db.repos.integrations.list(actor.orgId);
   }
 
+  /**
+   * Read one connection's non-secret config by org, with no permission check.
+   *
+   * This exists for server-side dispatchers — the outbound send route and the webhook — which
+   * have *already* established the org from an authenticated session (or from the connection
+   * that the webhook URL resolved to). They need the config to build a channel driver, but a
+   * `member` who can legitimately press "Send" does not hold `integrations:manage`, so routing
+   * them through {@link listConnections} would either fail the send or require granting a scope
+   * nobody should have. Callers must have resolved `orgId` themselves.
+   */
+  async getConnectionConfig(
+    orgId: string,
+    provider: string,
+  ): Promise<Record<string, unknown> | null> {
+    const conns = await this.db.repos.integrations.list(orgId);
+    const found = conns.find((c) => c.provider === provider);
+    return found ? ((found.config ?? {}) as Record<string, unknown>) : null;
+  }
+
+  /** Connection status by org, no permission check. Same dispatcher caveat as above. */
+  async getConnectionStatus(orgId: string, provider: string): Promise<string | null> {
+    const conns = await this.db.repos.integrations.list(orgId);
+    const found = conns.find((c) => c.provider === provider);
+    return found ? found.status : null;
+  }
+
   async requireConnection(actor: Actor, provider: string): Promise<IntegrationConnection> {
     const conns = await this.db.repos.integrations.list(actor.orgId);
     const found = conns.find((c) => c.provider === provider);
@@ -107,22 +154,92 @@ export class IntegrationService {
     assertCan(actor, 'integrations:manage');
     if (!input.provider) throw new ValidationError('Integration provider is required.', { field: 'provider' });
     if (!isPlainObject(input.config)) throw new ValidationError('Integration config must be an object.', { field: 'config' });
-    const sanitized = redactConfig(input.config);
+
+    // Secrets are pulled out of `config` and stored encrypted in `integration_secrets`.
+    // Whatever is left is non-secret configuration that is safe to echo to the dashboard.
+    const { config: safeConfig, secrets } = splitSecrets(input.config);
 
     const conn = await this.db.repos.integrations.upsert({
       id: newId('integration'),
       orgId: actor.orgId,
       provider: input.provider,
       status: mapCatalogToConnectionStatus(input.status),
-      config: sanitized,
+      config: safeConfig,
     });
+
+    for (const [name, plaintext] of Object.entries(secrets)) {
+      await this.writeSecret(actor, input.provider, name as IntegrationSecretName, plaintext);
+    }
 
     await this.audit.record(actor, 'integration.updated', 'integration_connection', conn.id, {
       provider: conn.provider,
       status: conn.status,
       catalogStatus: input.status,
+      // Names only — never values.
+      secretsConfigured: Object.keys(secrets),
     });
     return conn;
+  }
+
+  /**
+   * Read a provider's secrets in plaintext.
+   *
+   * Server-side only: no HTTP route calls this, because any route that can reach it can
+   * exfiltrate Meta credentials. Callers are the webhook signature verifier and the outbound
+   * dispatcher, both of which already resolved the org from an authenticated or
+   * connection-derived context before getting here.
+   *
+   * Returns `null` for a secret that was never configured, and throws when a stored secret
+   * cannot be decrypted (wrong `SESSION_SECRET`, tampered ciphertext) — a silent empty string
+   * here would push the caller back into mock behaviour, which is the exact failure mode this
+   * store exists to eliminate.
+   */
+  async readSecret(
+    orgId: string,
+    provider: string,
+    name: IntegrationSecretName,
+  ): Promise<string | null> {
+    const record = await this.db.repos.integrationSecrets.get(orgId, provider, name);
+    if (!record) return null;
+    if (record.invalidatedAt) return null;
+    const context = SECRET_FIELDS[name];
+    try {
+      return decryptSecret(
+        { ciphertext: record.ciphertext, iv: record.iv, authTag: record.authTag },
+        this.rootSecret,
+        context,
+      );
+    } catch {
+      throw new ValidationError(
+        `Stored credential "${name}" for ${provider} could not be decrypted. Re-save the integration credentials.`,
+        { provider, secret: name },
+      );
+    }
+  }
+
+  /** Which secret names exist for a provider — safe to return to the dashboard. */
+  async listSecretNames(orgId: string, provider: string): Promise<string[]> {
+    return this.db.repos.integrationSecrets.listNames(orgId, provider);
+  }
+
+  private async writeSecret(
+    actor: Actor,
+    provider: string,
+    name: IntegrationSecretName,
+    plaintext: string,
+  ): Promise<void> {
+    const context = SECRET_FIELDS[name];
+    const blob = encryptSecret(plaintext, this.rootSecret, context);
+    await this.db.repos.integrationSecrets.upsert({
+      orgId: actor.orgId,
+      provider,
+      secretName: name,
+      blob: {
+        ciphertext: blob.ciphertext,
+        iv: blob.iv,
+        authTag: blob.authTag,
+      },
+    });
   }
 
   async disconnect(actor: Actor, provider: string): Promise<IntegrationConnection> {
@@ -140,6 +257,10 @@ export class IntegrationService {
       status: 'disconnected',
       config: {},
     });
+    // Credentials must not outlive the connection: a "disconnected" integration that still has a
+    // usable access token is exactly the kind of thing that gets reconnected without the operator
+    // realising the old credential was still on disk.
+    await this.db.repos.integrationSecrets.delete(actor.orgId, provider);
     await this.audit.record(actor, 'integration.disconnected', 'integration_connection', updated.id, {
       provider: updated.provider,
     });
@@ -168,20 +289,35 @@ function mapCatalogToConnectionStatus(s: IntegrationCatalogStatus): IntegrationC
   return 'disconnected';
 }
 
-/** Strip obvious secrets before persisting to `config`. We still encrypt at rest, but: */
-function redactConfig(input: Record<string, unknown>): Record<string, unknown> {
-  const allowed = new Set(['phoneNumberId', 'businessAccountId', 'apiBase', 'verifyToken']);
+/**
+ * Split an incoming config blob into (a) non-secret config to persist on the connection and
+ * (b) secret values to encrypt into `integration_secrets`.
+ *
+ * Note the inversion from the previous implementation: secrets used to be *dropped* here, which
+ * meant the webhook signature check and the outbound dispatcher both read an empty string and
+ * fell back to mock delivery. Anything that looks like a credential is now routed to the
+ * encrypted store rather than discarded.
+ */
+function splitSecrets(input: Record<string, unknown>): {
+  config: Record<string, unknown>;
+  secrets: Partial<Record<IntegrationSecretName, string>>;
+} {
+  const secrets: Partial<Record<IntegrationSecretName, string>> = {};
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
-    if (typeof k !== 'string') continue;
-    if (k === 'accessToken' || k === 'appSecret' || k === 'apiKey' || k.toLowerCase().includes('secret')) continue;
-    if (allowed.has(k)) {
-      out[k] = typeof v === 'string' ? v : undefined;
+    if (isSecretField(k)) {
+      // Only persist a string secret. An empty/absent value means "leave the stored one alone",
+      // so a settings save that omits the token does not wipe a working credential.
+      if (typeof v === 'string' && v.length > 0) secrets[k] = v;
       continue;
     }
     out[k] = v;
   }
-  return out;
+  return { config: out, secrets };
+}
+
+function isSecretField(key: string): key is IntegrationSecretName {
+  return key in SECRET_FIELDS;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

@@ -14,6 +14,7 @@ import {
   ProductRepo,
 } from './repos/outbound.js';
 import { OAuthStateRepo, OAuthTokenRepo, SyncCursorRepo } from './repos/oauth.js';
+import { IntegrationSecretRepo } from './repos/integration-secrets.js';
 
 export interface Repositories {
   organizations: OrganizationRepo;
@@ -38,6 +39,7 @@ export interface Repositories {
   oauthStates: OAuthStateRepo;
   oauthTokens: OAuthTokenRepo;
   syncCursors: SyncCursorRepo;
+  integrationSecrets: IntegrationSecretRepo;
 }
 
 export function createRepositories(db: SqlClient): Repositories {
@@ -64,5 +66,6 @@ export function createRepositories(db: SqlClient): Repositories {
     oauthStates: new OAuthStateRepo(db),
     oauthTokens: new OAuthTokenRepo(db),
     syncCursors: new SyncCursorRepo(db),
+    integrationSecrets: new IntegrationSecretRepo(db),
   };
 }

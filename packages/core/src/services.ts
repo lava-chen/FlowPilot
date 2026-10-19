@@ -74,7 +74,7 @@ export function createCoreServices({
   const taskOperations = new TaskOperationsService(db, audit);
   const aiSettings = new AiProviderSettingsService(db, audit, ai, encryptionSecret);
   const outbounds = new OutboundActionService(db, audit);
-  const integrations = new IntegrationService(db, audit);
+  const integrations = new IntegrationService(db, audit, encryptionSecret ?? '');
   const whatsappReply = new WhatsAppReplyService({ db, integrations });
   const oauth = new OAuthService({
     db,
@@ -86,6 +86,7 @@ export function createCoreServices({
     db,
     audit,
     oauth,
+    outbounds,
     graphProvider: outlookProvider,
   });
 

@@ -136,11 +136,24 @@ export class OutboundActionRepo {
     return rows.map(mapOutbound);
   }
 
+  /**
+   * Move an action to `nextStatus`.
+   *
+   * When `expectedStatus` is supplied the update is a compare-and-swap: the row is only written
+   * if it is *still* in that status, and a lost race returns `null` instead of clobbering.
+   * This is what makes `approved -> sending -> sent` safe under concurrent dispatch — without it,
+   * two requests both read `approved`, both validate the transition in JS, and both send the same
+   * customer-visible message.
+   *
+   * Callers that pass `expectedStatus` must treat `null` as "someone else got there first" and
+   * must not retry the write with the same expectation.
+   */
   async updateStatus(
     orgId: string,
     id: string,
     nextStatus: OutboundActionStatus,
     extra: {
+      expectedStatus?: OutboundActionStatus;
       approvedBy?: string | null;
       approvedByLabel?: string | null;
       approvedAt?: string | null;
@@ -149,7 +162,7 @@ export class OutboundActionRepo {
       errorMessage?: string | null;
       sentAt?: string | null;
     } = {},
-  ): Promise<OutboundAction> {
+  ): Promise<OutboundAction | null> {
     const params: unknown[] = [nextStatus];
     const sets: string[] = ['status = $1', 'updated_at = now()'];
     if (extra.approvedBy !== undefined) {
@@ -181,11 +194,21 @@ export class OutboundActionRepo {
       sets.push(`sent_at = $${params.length}`);
     }
     params.push(id, orgId);
+    let where = `id = $${params.length - 1} and org_id = $${params.length}`;
+    if (extra.expectedStatus !== undefined) {
+      params.push(extra.expectedStatus);
+      where += ` and status = $${params.length}`;
+    }
     const row = await this.db.one<Row>(
-      `update outbound_actions set ${sets.join(', ')} where id = $${params.length - 1} and org_id = $${params.length} returning *`,
+      `update outbound_actions set ${sets.join(', ')} where ${where} returning *`,
       params,
     );
-    if (!row) throw new NotFoundError('OutboundAction', id);
+    // With `expectedStatus` a missing row means the race was lost, not that the id is unknown.
+    // Without it, preserve the original "not found" behaviour for callers that rely on it.
+    if (!row) {
+      if (extra.expectedStatus !== undefined) return null;
+      throw new NotFoundError('OutboundAction', id);
+    }
     return mapOutbound(row);
   }
 

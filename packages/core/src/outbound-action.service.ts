@@ -158,11 +158,18 @@ export class OutboundActionService {
     }
 
     const updated = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, target, {
+      expectedStatus: action.status,
       approvedBy: actor.userId,
       approvedByLabel: actor.displayName,
       approvedAt: nowIso(),
       approvalNote: input.note ?? null,
     });
+    if (!updated) {
+      throw new ValidationError(
+        'This outbound action changed while you were reviewing it. Refresh and decide again.',
+        { field: 'status' },
+      );
+    }
 
     await this.db.repos.outboundActions.recordEvent({
       id: newId('outboundEvent'),
@@ -205,7 +212,19 @@ export class OutboundActionService {
       });
     }
 
-    const sending = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, 'sending');
+    // Claim the transition atomically. Two concurrent dispatchers both pass the checks above,
+    // but only the one whose `approved -> sending` compare-and-swap lands gets to call the
+    // provider; the loser bails out here rather than double-sending to a customer.
+    const sending = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, 'sending', {
+      expectedStatus: action.status,
+    });
+    if (!sending) {
+      throw new ValidationError(
+        'This outbound action was already picked up by another sender. Refresh to see its current state.',
+        { field: 'status' },
+      );
+    }
+
     await this.db.repos.outboundActions.recordEvent({
       id: newId('outboundEvent'),
       orgId: actor.orgId,
@@ -226,10 +245,18 @@ export class OutboundActionService {
 
     if (result.ok && result.externalMessageId) {
       const sent = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, 'sent', {
+        expectedStatus: 'sending',
         externalMessageId: result.externalMessageId,
         sentAt: nowIso(),
         errorMessage: null,
       });
+      // The action is already in `sending` and this process owns it, so a null here would mean
+      // something external rewrote the row. Fail loudly instead of reporting a phantom send.
+      if (!sent) {
+        throw new ValidationError('Outbound action changed state while sending; refusing to report success.', {
+          field: 'status',
+        });
+      }
       await this.db.repos.outboundActions.recordEvent({
         id: newId('outboundEvent'),
         orgId: actor.orgId,
@@ -250,6 +277,7 @@ export class OutboundActionService {
     // Failure path. The action stays in `failed`; a reviewer can compose a follow-up draft
     // rather than retrying the same one, which prevents accidental double sends.
     const failed = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, 'failed', {
+      expectedStatus: 'sending',
       errorMessage: [
         result.errorTitle ?? 'Provider failed',
         result.errorCode ? `(${result.errorCode})` : '',
@@ -259,6 +287,11 @@ export class OutboundActionService {
         .join(' ')
         .trim(),
     });
+    if (!failed) {
+      throw new ValidationError('Outbound action changed state while sending; failure could not be recorded.', {
+        field: 'status',
+      });
+    }
     await this.db.repos.outboundActions.recordEvent({
       id: newId('outboundEvent'),
       orgId: actor.orgId,
@@ -313,7 +346,15 @@ export class OutboundActionService {
         capability: 'approvals:decide',
       });
     }
-    const updated = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, target);
+    const updated = await this.db.repos.outboundActions.updateStatus(actor.orgId, action.id, target, {
+      expectedStatus: action.status,
+    });
+    if (!updated) {
+      throw new ValidationError(
+        'This outbound action changed while you were working on it. Refresh and try again.',
+        { field: 'status' },
+      );
+    }
     await this.db.repos.outboundActions.recordEvent({
       id: newId('outboundEvent'),
       orgId: actor.orgId,

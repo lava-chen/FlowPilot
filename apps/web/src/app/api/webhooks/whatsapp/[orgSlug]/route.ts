@@ -76,7 +76,10 @@ export async function POST(
     if (!conn) {
       return new Response('Webhook not configured for this org.', { status: 404 });
     }
-    const appSecret = String(conn.config['appSecret'] ?? '');
+    // The app secret is encrypted at rest and only ever decrypted here, after the org has been
+    // resolved from the webhook URL. It is never read from `conn.config` (which carries only
+    // non-secret settings) and never accepted from the request.
+    const appSecret = await getCore().integrations.readSecret(conn.orgId, 'whatsapp-cloud', 'appSecret');
     if (!appSecret) {
       return errorResponse(new WhatsAppSignatureError('WhatsApp app secret missing for this org.'));
     }
