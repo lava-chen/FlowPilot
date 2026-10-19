@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, ChevronRight, FileText, Link2, Mail, Sparkles, Wand2 } from 'lucide-react';
+import { AlertTriangle, ChevronRight, FileText, Link2, Mail, MessageSquare, Sparkles, Wand2 } from 'lucide-react';
 import {
   Card,
   CardContent,
@@ -65,10 +66,54 @@ function errorText(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.explain : error instanceof Error ? error.message : fallback;
 }
 
-export function InboxClient({ requests, projects }: { requests: InboxRequests; projects: ProjectList }) {
+type Channel = 'whatsapp' | 'email' | 'unknown';
+
+function channelFor(request: InboxRequest): Channel {
+  if (request.source === 'whatsapp') return 'whatsapp';
+  // Legacy rows: source='email' but the body may still have arrived via WhatsApp
+  // before the source column gained a third value. Treat the phone pattern as a hint.
+  const from = request.rawFrom.trim();
+  if (/^\+?\d[\d\s-]{6,}$/.test(from)) return 'whatsapp';
+  return 'email';
+}
+
+function ChannelBadge({ channel }: { channel: Channel }) {
+  if (channel === 'whatsapp') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+        <MessageSquare className="h-3 w-3" aria-hidden />
+        WhatsApp
+      </span>
+    );
+  }
+  if (channel === 'email') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
+        <Mail className="h-3 w-3" aria-hidden />
+        Email
+      </span>
+    );
+  }
+  return null;
+}
+
+export function InboxClient({
+  requests,
+  projects,
+  initialRequestId,
+}: {
+  requests: InboxRequests;
+  projects: ProjectList;
+  initialRequestId?: string;
+}) {
   const router = useRouter();
 
-  const [selectedId, setSelectedId] = useState<string | null>(requests[0]?.id ?? null);
+  // Honor deep-links from the outbox / activity page, falling back to the first request.
+  const initialId =
+    initialRequestId && requests.some((r) => r.id === initialRequestId)
+      ? initialRequestId
+      : requests[0]?.id ?? null;
+  const [selectedId, setSelectedId] = useState<string | null>(initialId);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -79,6 +124,13 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
   const [autoCreateDraft, setAutoCreateDraft] = useState(true);
 
   const [linkChoice, setLinkChoice] = useState<{ requestId: string; projectId: string } | null>(null);
+
+  const [generateBusy, setGenerateBusy] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateResult, setGenerateResult] = useState<{
+    draftId: string | null;
+    reply: { body: string; intent: string; needsHuman: boolean; citedProductIds: string[]; reason: string | null; priority: 'normal' | 'high' };
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,8 +147,16 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
     };
   }, []);
 
+  // Clear reply-generator state when the user picks a different request.
+  useEffect(() => {
+    setGenerateResult(null);
+    setGenerateError(null);
+  }, [selectedId]);
+
   const selected = requests.find((request) => request.id === selectedId) ?? null;
   const analysis = selected?.analysis ?? null;
+  const selectedChannel = selected ? channelFor(selected) : 'unknown';
+  const isWhatsApp = selectedChannel === 'whatsapp';
   const activeTemplateId = templateId || templates?.[0]?.id || '';
   const projectChoice = linkChoice && linkChoice.requestId === selected?.id ? linkChoice.projectId : '';
 
@@ -187,6 +247,38 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
       setActionError(errorText(error, 'The simulated email did not run.'));
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * Drives the deterministic Bakery reply generator. We never expose `analysis` to the
+   * user as proof the reply is grounded; instead the *generator* must say so itself, and
+   * the response carries `needsHuman` so the reviewer can reject when it can't.
+   */
+  const generateReply = async () => {
+    if (!selected) return;
+    setGenerateBusy(true);
+    setGenerateError(null);
+    setGenerateResult(null);
+    try {
+      const result = await apiFetch<{
+        draftId: string | null;
+        reply: { body: string; intent: string; needsHuman: boolean; citedProductIds: string[]; reason: string | null; priority: 'normal' | 'high' };
+      }>('/api/whatsapp/generate-reply', {
+        method: 'POST',
+        json: { requestId: selected.id },
+      });
+      setGenerateResult(result);
+      afterMutation({
+        tone: result.draftId ? 'success' : 'info',
+        text: result.draftId
+          ? `Reply queued (${result.reply.intent}${result.reply.needsHuman ? ', awaiting human review' : ''}). Open the Outbox to approve.`
+          : 'Reply could not be queued. See the Inbox detail for the analyzer note.',
+      });
+    } catch (error) {
+      setGenerateError(errorText(error, 'The reply generator did not run.'));
+    } finally {
+      setGenerateBusy(false);
     }
   };
 
@@ -291,6 +383,7 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
                             <RequestStatusBadge status={request.status} />
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-500">
+                            <ChannelBadge channel={channelFor(request)} />
                             <span className="min-w-0 truncate">{request.rawFrom}</span>
                             {request.projectCode ? (
                               <span className="font-mono">{request.projectCode}</span>
@@ -299,6 +392,11 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
                             )}
                             {request.draftTaskIds.length > 0 ? (
                               <Badge tone="info">{request.draftTaskIds.length} task(s)</Badge>
+                            ) : null}
+                            {request.outboundActionIds.length > 0 ? (
+                              <Link href="/outbox" className="text-[11px] text-accent underline-offset-2 hover:underline">
+                                {request.outboundActionIds.length} outbound →
+                              </Link>
                             ) : null}
                             {request.analysis ? null : <Badge tone="warning">not analyzed</Badge>}
                           </div>
@@ -356,7 +454,10 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
               <Card>
                 <CardHeader>
                   <div className="min-w-0">
-                    <CardTitle className="truncate">{selected.rawSubject}</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <ChannelBadge channel={selectedChannel} />
+                      <CardTitle className="truncate">{selected.rawSubject}</CardTitle>
+                    </div>
                     <p className="mt-0.5 truncate text-[11px] text-ink-500">
                       {selected.rawFrom} · received {fmt(selected.rawReceivedAt)}
                     </p>
@@ -364,7 +465,7 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
                   <RequestStatusBadge status={selected.status} />
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div aria-label="Raw email body" className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-slate-50 px-3 py-2.5 font-mono text-xs leading-relaxed text-ink-700">
+                  <div aria-label={isWhatsApp ? 'Raw WhatsApp message' : 'Raw email body'} className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-slate-50 px-3 py-2.5 font-mono text-xs leading-relaxed text-ink-700">
                     {selected.rawBody}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -376,8 +477,69 @@ export function InboxClient({ requests, projects }: { requests: InboxRequests; p
                       <FileText className="h-4 w-4" aria-hidden />
                       Create task draft
                     </Button>
+                    {isWhatsApp ? (
+                      <Button
+                        variant="secondary"
+                        onClick={generateReply}
+                        loading={generateBusy}
+                      >
+                        <MessageSquare className="h-4 w-4" aria-hidden />
+                        Generate WhatsApp reply
+                      </Button>
+                    ) : null}
                     <span className="self-center text-[11px] text-ink-500">Demo · rule-based extraction</span>
                   </div>
+                  {isWhatsApp && (generateResult || generateError) ? (
+                    <div className="rounded-lg border border-line bg-slate-50 px-3 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[12px] font-semibold text-ink-800">
+                          Reply {generateResult ? `(${generateResult.reply.intent})` : ''}
+                        </p>
+                        {generateResult ? (
+                          <span
+                            className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ${
+                              generateResult.reply.needsHuman
+                                ? 'bg-amber-50 text-amber-700 ring-amber-200'
+                                : 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                            }`}
+                          >
+                            {generateResult.reply.needsHuman ? 'Needs human review' : 'Ready to approve'}
+                          </span>
+                        ) : null}
+                      </div>
+                      {generateError ? (
+                        <p className="mt-2 text-[12px] text-rose-700">{generateError}</p>
+                      ) : (
+                        <>
+                          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md bg-white px-3 py-2 text-[12px] leading-relaxed text-ink-800 ring-1 ring-line">
+                            {generateResult?.reply.body}
+                          </pre>
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-500">
+                            <span>
+                              {generateResult?.reply.citedProductIds.length
+                                ? `Cited products: ${generateResult?.reply.citedProductIds.join(', ')}`
+                                : 'Catalog did not match a specific product.'}
+                            </span>
+                            {generateResult?.draftId ? (
+                              <Link href="/outbox" className="text-accent underline-offset-2 hover:underline">
+                                Open in Outbox →
+                              </Link>
+                            ) : null}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                  {isWhatsApp && selected.outboundActionIds.length > 0 ? (
+                    <p className="text-[11px] text-ink-500">
+                      This request already has {selected.outboundActionIds.length} outbound action
+                      {selected.outboundActionIds.length === 1 ? '' : 's'}.{' '}
+                      <Link href="/outbox" className="text-accent underline-offset-2 hover:underline">
+                        Review them
+                      </Link>{' '}
+                      before generating another.
+                    </p>
+                  ) : null}
                 </CardContent>
               </Card>
 

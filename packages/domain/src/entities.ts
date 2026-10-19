@@ -51,7 +51,7 @@ export const actorKinds = ['user', 'agent', 'system'] as const;
 export type ActorKind = (typeof actorKinds)[number];
 
 /** MCP scopes. Note: there is deliberately no `approvals:decide` scope. */
-export const scopes = ['projects:read', 'requests:read', 'requests:write', 'tasks:read', 'tasks:write'] as const;
+export const scopes = ['projects:read', 'requests:read', 'requests:write', 'tasks:read', 'tasks:write', 'outbounds:read', 'outbounds:write'] as const;
 export type Scope = (typeof scopes)[number];
 
 export const RoleSchema = z.enum(membershipRoles);
@@ -66,6 +66,47 @@ export const TaskSourceSchema = z.enum(taskSources);
 export const ApprovalDecisionSchema = z.enum(approvalDecisions);
 export const ActorKindSchema = z.enum(actorKinds);
 export const ScopeSchema = z.enum(scopes);
+
+/* -------------------------------------------------------------------------- */
+/* Integration statuses (v0.2 — used by the Integrations dashboard catalog)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Mirror — the database `integration_connections.status` column still uses the historical
+ * `connected | disconnected | error` triple. The dashboard surfaces a richer catalog state with
+ * `demo | mock | not_configured | connected | error | reauth_required` and projects both.
+ */
+export const integrationStatuses = [
+  'demo',
+  'mock',
+  'not_configured',
+  'connected',
+  'error',
+  'reauth_required',
+] as const;
+export type IntegrationCatalogStatus = (typeof integrationStatuses)[number];
+export const IntegrationCatalogStatusSchema = z.enum(integrationStatuses);
+
+/* -------------------------------------------------------------------------- */
+/* Outbound action (v0.2 — used for WhatsApp and any future external send)     */
+/* -------------------------------------------------------------------------- */
+
+export const outboundActionChannels = ['whatsapp', 'email', 'webhook'] as const;
+export type OutboundActionChannel = (typeof outboundActionChannels)[number];
+
+export const outboundActionStatuses = [
+  'draft',
+  'pending_approval',
+  'approved',
+  'rejected',
+  'sending',
+  'sent',
+  'failed',
+] as const;
+export type OutboundActionStatus = (typeof outboundActionStatuses)[number];
+
+export const OutboundActionChannelSchema = z.enum(outboundActionChannels);
+export const OutboundActionStatusSchema = z.enum(outboundActionStatuses);
 
 export interface Organization {
   id: string;
@@ -123,7 +164,7 @@ export interface Project {
 export interface RequestRecord {
   id: string;
   orgId: string;
-  source: 'email' | 'manual';
+  source: 'email' | 'manual' | 'whatsapp';
   sourceRef: string;
   externalId: string;
   clientId: string | null;
@@ -295,6 +336,74 @@ export interface AuditEvent {
   metadata: Record<string, unknown>;
   createdAt: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Outbound action contracts (v0.2)                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An outbound action is a draft message FlowPilot *intends* to send to an external channel.
+ *
+ * Why a separate entity and not just another task status: sending a WhatsApp message to a
+ * customer, or an email to a client, is a *platform* action that must clear its own approval
+ * gate, carry its own delivery proof (external message id), and survive retries without
+ * duplicating. Conflating it with `tasks` would force the existing task state machine to
+ * model both kinds of transitions, breaking the human/agent approval rule the rest of the
+ * product already relies on.
+ *
+ * Linkage (all optional): an action can be created in response to a `Request` (e.g. a reply
+ * to a customer WhatsApp message) and/or carry `leadId` when it doubles as a CRM record.
+ */
+export interface OutboundAction {
+  id: string;
+  orgId: string;
+  channel: OutboundActionChannel;
+  /** Provider identifier within the channel (`whatsapp-cloud`, `mock-whatsapp`, ...). */
+  provider: string;
+  /** The external recipient (a phone number, an email, a webhook URL string, ...). */
+  to: string;
+  /** A short subject line for channels that have one; WhatsApp ignores it. */
+  subject: string | null;
+  /** The body that will be sent. Already trimmed and validated by the channel. */
+  body: string;
+  /** Linked inbound request — the body is usually generated as a reply to that request. */
+  requestId: string | null;
+  /** Linked CRM lead — set when the action doubles as a new/updated lead record. */
+  leadId: string | null;
+  /** Provider's external id for the delivered message (only set after a successful send). */
+  externalMessageId: string | null;
+  status: OutboundActionStatus;
+  /** Last error from the provider, surfaced in the dashboard and the audit trail. */
+  errorMessage: string | null;
+  /** Idempotency hint handed to the channel; re-sends with the same key are no-ops. */
+  dedupeKey: string;
+  createdBy: string;
+  createdAt: string;
+  approvedBy: string | null;
+  approvedByLabel: string | null;
+  approvedAt: string | null;
+  /** Decision note from the approver (visible in the activity feed). */
+  approvalNote: string | null;
+  sentAt: string | null;
+  updatedAt: string;
+}
+
+/** State machine for outbound actions. The transition table itself lives in this package. */
+export const outboundActionTransitions: ReadonlyArray<{
+  from: OutboundActionStatus;
+  to: OutboundActionStatus;
+  guard: 'system' | 'human' | 'system-or-human';
+}> = [
+  { from: 'draft', to: 'pending_approval', guard: 'system-or-human' },
+  { from: 'draft', to: 'rejected', guard: 'human' },
+  { from: 'pending_approval', to: 'approved', guard: 'human' },
+  { from: 'pending_approval', to: 'rejected', guard: 'human' },
+  { from: 'pending_approval', to: 'draft', guard: 'human' },
+  { from: 'approved', to: 'sending', guard: 'system' },
+  { from: 'sending', to: 'sent', guard: 'system' },
+  { from: 'sending', to: 'failed', guard: 'system' },
+  { from: 'approved', to: 'failed', guard: 'system' },
+];
 
 /* -------------------------------------------------------------------------- */
 /* AI analysis contract                                                        */

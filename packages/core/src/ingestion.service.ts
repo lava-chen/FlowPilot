@@ -63,7 +63,7 @@ export class IngestionService {
       const request = await this.db.repos.requests.create({
         id: newId('request'),
         orgId: actor.orgId,
-        source: 'email',
+        source: deriveSource(message.provider),
         sourceRef,
         externalId: message.externalId,
         rawFrom: message.fromName ? `${message.fromName} <${message.from}>` : message.from,
@@ -205,7 +205,7 @@ export class IngestionService {
   }
 
   validateMessage(message: NormalizedInboundMessage): void {
-    if (!message.from.includes('@')) {
+    if (!message.from.includes('@') && !looksLikePhone(message.from)) {
       throw new ValidationError('Inbound message is missing a valid sender address.', { field: 'from' });
     }
     if (message.body.trim().length === 0) {
@@ -215,4 +215,23 @@ export class IngestionService {
       throw new ValidationError('Inbound message has no subject.', { field: 'subject' });
     }
   }
+}
+
+/**
+ * Maps a normalized provider identifier to the `requests.source` enum value.
+ *
+ * Real providers end up as `'whatsapp'` / `'email'`; the mock adapters default to
+ * `'email'` (kept for backward compatibility). Any unknown provider falls back to
+ * `'email'` because the inbox has always supported whatever an email-shaped
+ * adapter sends — a misrouted channel would still land in the inbox rather than
+ * being silently dropped.
+ */
+function deriveSource(provider: string): 'email' | 'manual' | 'whatsapp' {
+  if (provider.startsWith('whatsapp') || provider === 'mock-whatsapp') return 'whatsapp';
+  return 'email';
+}
+
+function looksLikePhone(value: string): boolean {
+  // Conservative — accept E.164 (`+15551234567`) and bare long-digit numbers.
+  return /^\+?\d[\d\s-]{6,}$/.test(value.trim());
 }

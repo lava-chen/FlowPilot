@@ -71,7 +71,13 @@ export class QueryService {
   }
 
   async inbox(actor: Actor, filter: { status?: RequestRecord['status'][]; limit: number }): Promise<{
-    requests: Array<RequestRecord & { draftTaskIds: string[]; clientName: string | null; projectName: string | null; projectCode: string | null }>;
+    requests: Array<RequestRecord & {
+      draftTaskIds: string[];
+      outboundActionIds: string[];
+      clientName: string | null;
+      projectName: string | null;
+      projectCode: string | null;
+    }>;
   }> {
     assertCan(actor, 'requests:read');
 
@@ -83,13 +89,23 @@ export class QueryService {
     const clientById = new Map(clients.map((c) => [c.id, c]));
     const projectById = new Map(projects.map((p) => [p.id, p]));
 
-    const tasks = await this.db.repos.tasks.list(actor.orgId, { limit: 200 });
+    const [tasks, outboundActions] = await Promise.all([
+      this.db.repos.tasks.list(actor.orgId, { limit: 200 }),
+      this.db.repos.outboundActions.list(actor.orgId, { limit: 200 }),
+    ]);
     const tasksByRequest = new Map<string, string[]>();
     for (const task of tasks) {
       if (!task.requestId) continue;
       const list = tasksByRequest.get(task.requestId) ?? [];
       list.push(task.id);
       tasksByRequest.set(task.requestId, list);
+    }
+    const outboundActionsByRequest = new Map<string, string[]>();
+    for (const action of outboundActions) {
+      if (!action.requestId) continue;
+      const list = outboundActionsByRequest.get(action.requestId) ?? [];
+      list.push(action.id);
+      outboundActionsByRequest.set(action.requestId, list);
     }
 
     return {
@@ -98,6 +114,7 @@ export class QueryService {
         return {
           ...request,
           draftTaskIds: tasksByRequest.get(request.id) ?? [],
+          outboundActionIds: outboundActionsByRequest.get(request.id) ?? [],
           clientName: request.clientId ? (clientById.get(request.clientId)?.name ?? null) : null,
           projectName: project?.name ?? null,
           projectCode: project?.code ?? null,

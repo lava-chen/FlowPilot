@@ -40,15 +40,13 @@ export const envSchema = z.object({
   FLOWPILOT_AI_MODEL: z.string().trim().min(1).optional().or(z.literal('').transform(() => undefined)),
   FLOWPILOT_AI_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(30000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
-}).superRefine((env, ctx) => {
-  if (env.FLOWPILOT_AI_PROVIDER === 'openai-compatible') {
-    if (!env.FLOWPILOT_AI_API_KEY) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['FLOWPILOT_AI_API_KEY'], message: 'Required when FLOWPILOT_AI_PROVIDER=openai-compatible.' });
-    }
-    if (!env.FLOWPILOT_AI_MODEL) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['FLOWPILOT_AI_MODEL'], message: 'Required when FLOWPILOT_AI_PROVIDER=openai-compatible.' });
-    }
-  }
+  // Microsoft Graph (Outlook) — confidential-client OAuth. All four are required to start
+  // a real OAuth handshake. None are required to *boot* FlowPilot; we surface them via
+  // the integrations catalog and run only when configured.
+  FLOWPILOT_OUTLOOK_CLIENT_ID: z.string().optional().or(z.literal('').transform(() => undefined)),
+  FLOWPILOT_OUTLOOK_CLIENT_SECRET: z.string().optional().or(z.literal('').transform(() => undefined)),
+  FLOWPILOT_OUTLOOK_TENANT_ID: z.string().optional().or(z.literal('').transform(() => undefined)),
+  FLOWPILOT_OUTLOOK_REDIRECT_URI: z.string().url().optional().or(z.literal('').transform(() => undefined)),
 });
 
 export type Env = z.infer<typeof envSchema>;

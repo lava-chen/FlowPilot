@@ -19,6 +19,10 @@ const PREFIXES = {
   timeEntry: 'tim',
   taskReview: 'rev',
   dependency: 'dep',
+  outbound: 'ob',
+  outboundEvent: 'obevt',
+  lead: 'lead',
+  oauth: 'oauth',
 } as const;
 
 export type IdKind = keyof typeof PREFIXES;

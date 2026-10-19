@@ -5,8 +5,14 @@ import { InboxClient } from './inbox-client';
 
 export const dynamic = 'force-dynamic';
 
-export default async function InboxPage() {
+export default async function InboxPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ requestId?: string | string[] }>;
+}) {
   const actor = await requireActor();
+  const params = searchParams ? await searchParams : {};
+  const queryRequestId = Array.isArray(params.requestId) ? params.requestId[0] : params.requestId;
 
   try {
     const core = getCore();
@@ -14,7 +20,13 @@ export default async function InboxPage() {
       core.queries.inbox(actor, { limit: 50 }),
       core.queries.projects(actor),
     ]);
-    return <InboxClient requests={inbox.requests} projects={projects} />;
+    return (
+      <InboxClient
+        requests={inbox.requests}
+        projects={projects}
+        initialRequestId={queryRequestId}
+      />
+    );
   } catch (error) {
     return (
       <div className="space-y-4">

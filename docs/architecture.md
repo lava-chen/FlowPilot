@@ -181,3 +181,38 @@ breaks the tests.
 Billing, plan tiers, a visual workflow editor, real OAuth/webhook connections, a background job
 queue, and production monitoring are out of scope — but each has a named extension point
 (`IntegrationAdapter`, `WorkflowStepRunner`, `AiProvider`, `AuditSink`).
+
+## 11. Outbound action subsystem (v0.2)
+
+Sends to external channels (WhatsApp, email, webhook) are not internal `Task` objects — they
+are a separate entity, `OutboundAction`, with their own state machine. The split is
+load-bearing: a customer-visible message must clear an approval gate, carry its own
+provider-issued message id, and survive webhook redelivery without duplicating. Squeezing
+those concerns into `tasks` would force the existing task transitions to grow a second
+"draft an external send" subgraph.
+
+```text
+draft ──────► pending_approval ──approve(human)─► approved ──send(system)──► sending ─► sent
+  │                  │  │                                                                       │
+  │                  │  └──reject(human)──► rejected ◄──────────────────────────► failed ◄───┘
+  │                  └──revise(human)──► draft
+  └───── cancel (omitted for brevity) ─────────────────────────────────────────────────────────────►
+```
+
+Guards:
+
+- `draft → pending_approval` is `system-or-human`: an agent or a webhook may submit a draft, but
+  may not move past `approved`.
+- `pending_approval → approved | rejected | draft` is human-only. `permissions.ts` carries an
+  `outbounds:decide` capability that no agent scope unlocks — identical pattern to
+  `approvals:decide`.
+- `approved → sending` and `sending → sent | failed` are system-only; the dispatcher is the
+  `ChannelDriver` interface, which has both `MockWhatsAppChannel` (offline / tests) and
+  `WhatsAppCloudChannel` (real Meta Cloud API).
+
+Idempotency is enforced by `unique (org_id, channel, dedupe_key)` on `outbound_actions`; the
+unique key is what makes a webhook redelivery safe. The webhook signature verifier
+(`verifyWhatsAppSignature`) is HMAC-SHA256 over the raw request body and uses
+`timingSafeEqual` — see `packages/integrations/src/signature.ts`.
+
+See `docs/phase-1-whatsapp.md` for the Phase 1 implementation report.

@@ -28,7 +28,11 @@ export type Capability =
   | 'drafts:create'
   | 'approvals:decide'
   | 'credentials:manage'
-  | 'integrations:manage';
+  | 'integrations:manage'
+  | 'integrations:read'
+  | 'outbounds:read'
+  | 'outbounds:write'
+  | 'outbounds:decide';
 
 const ROLE_CAPABILITIES: Record<MembershipRole, readonly Capability[]> = {
   owner: [
@@ -46,6 +50,10 @@ const ROLE_CAPABILITIES: Record<MembershipRole, readonly Capability[]> = {
     'approvals:decide',
     'credentials:manage',
     'integrations:manage',
+    'integrations:read',
+    'outbounds:read',
+    'outbounds:write',
+    'outbounds:decide',
   ],
   admin: [
     'projects:read',
@@ -62,6 +70,10 @@ const ROLE_CAPABILITIES: Record<MembershipRole, readonly Capability[]> = {
     'approvals:decide',
     'credentials:manage',
     'integrations:manage',
+    'integrations:read',
+    'outbounds:read',
+    'outbounds:write',
+    'outbounds:decide',
   ],
   manager: [
     'projects:read',
@@ -76,14 +88,28 @@ const ROLE_CAPABILITIES: Record<MembershipRole, readonly Capability[]> = {
     'drafts:create',
     'tasks:submit',
     'approvals:decide',
+    'integrations:read',
+    'outbounds:read',
+    'outbounds:write',
+    'outbounds:decide',
   ],
-  member: ['projects:read', 'tasks:read', 'tasks:transition', 'tasks:contribute', 'requests:read'],
+  member: [
+    'projects:read',
+    'tasks:read',
+    'tasks:transition',
+    'tasks:contribute',
+    'requests:read',
+    'integrations:read',
+    'outbounds:read',
+    'outbounds:write',
+  ],
 };
 
 /**
  * Which agent scopes satisfy which capability.
  *
- * `approvals:decide` is intentionally unreachable — the absence is the feature.
+ * `approvals:decide` and `outbounds:decide` are intentionally unreachable — the absence is
+ * the feature.
  */
 const SCOPE_CAPABILITIES: Record<Scope, readonly Capability[]> = {
   'projects:read': ['projects:read'],
@@ -91,6 +117,8 @@ const SCOPE_CAPABILITIES: Record<Scope, readonly Capability[]> = {
   'requests:write': ['requests:analyze', 'requests:ingest'],
   'tasks:read': ['tasks:read'],
   'tasks:write': ['tasks:write', 'drafts:create', 'tasks:submit'],
+  'outbounds:read': ['outbounds:read'],
+  'outbounds:write': ['outbounds:write', 'drafts:create', 'tasks:submit'],
 };
 
 export function can(actor: Actor, capability: Capability, context: { assigneeId?: string | null } = {}): boolean {

@@ -503,6 +503,121 @@ async function ensureDemoOperationalRecords(db: SqlClient, orgId: string): Promi
     `insert into task_dependencies (id,org_id,task_id,depends_on_task_id)
      values ('dep_seed_lumen_variant',$1,'tsk_lumen_15s','tsk_lumen_hook')
      on conflict (id) do nothing`, [orgId]);
+
+  // Retail Bakery demo is optional (Phase 1 WhatsApp). Run only when explicitly requested
+  // so existing local databases aren't unexpectedly expanded.
+  if (process.env['FLOWPILOT_SEED_BAKERY'] === 'true') {
+    await ensureBakeryDemo(db, orgId);
+  }
+}
+
+/**
+ * Retail Bakery tenant — a small specialty bakery used by the WhatsApp demo flow. Adds a
+ * product / FAQ / hours catalog that the reply generator grounds against, plus a mock-mode
+ * integration connection so the dashboard "simulate inbound WhatsApp" button has somewhere
+ * to send.
+ *
+ * Idempotent: all rows use fixed ids and a unique dedupe-key on connection.
+ */
+async function ensureBakeryDemo(db: SqlClient, _orgId: string): Promise<void> {
+  const orgId = 'org_bakery';
+  const slug = 'saturday-bakery';
+  const exists = await db.one<{ id: string } | null>('select id from organizations where slug = $1', [slug]);
+  if (exists) return;
+
+  await db.query(
+    `insert into organizations (id, name, slug, timezone)
+     values ($1,$2,$3,$4)`,
+    [orgId, 'Saturday Bakery', slug, 'America/Los_Angeles'],
+  );
+
+  // Owner / manager accounts (same shared demo password)
+  const team = [
+    { id: 'usr_owen_b', email: 'owen@saturdaybakery.test', name: 'Owen Pinto', title: 'Owner', role: 'owner' as const },
+    { id: 'usr_mira_b', email: 'mira@saturdaybakery.test', name: 'Mira Chen', title: 'Front-of-house', role: 'member' as const },
+  ];
+  for (const u of team) {
+    await db.query(
+      `insert into users (id, email, full_name, title) values ($1,$2,$3,$4) on conflict (id) do nothing`,
+      [u.id, u.email, u.name, u.title],
+    );
+    await db.query(
+      `insert into memberships (id, org_id, user_id, role, title, weekly_capacity_hours)
+       values ($1,$2,$3,$4,$5,$6) on conflict (id) do nothing`,
+      [`mem_${u.id.slice(4)}`, orgId, u.id, u.role, u.title, 32],
+    );
+  }
+  const bcryptSalt = randomBytes(16).toString('hex');
+  const bcryptHash = scryptSync(DEMO_PASSWORD, bcryptSalt, 32).toString('hex');
+  for (const u of team) {
+    await db.query(
+      `insert into local_credentials (user_id, password_hash, password_salt) values ($1,$2,$3) on conflict (user_id) do nothing`,
+      [u.id, bcryptHash, bcryptSalt],
+    );
+  }
+
+  // Product catalog (deterministic ids so re-running the seed is safe).
+  const products = [
+    { id: 'prd_classic_sourdough', name: 'Country Sourdough', price: 950, desc: 'Slow-fermented, 24h cold proof.' },
+    { id: 'prd_chocolate_babka', name: 'Chocolate Babka', price: 2200, desc: 'Twisted brioche with Ecuadorian dark chocolate.' },
+    { id: 'prd_birthday_cake', name: 'Birthday Cake (8")', price: 4500, desc: 'Vanilla chiffon, vanilla buttercream. Made to order.' },
+    { id: 'prd_birthday_cake_choc', name: 'Chocolate Birthday Cake (8")', price: 4800, desc: 'Cocoa sponge, whipped ganache.' },
+    { id: 'prd_butter_croissant', name: 'Butter Croissant', price: 425, desc: 'French-style, 48h ferment.' },
+    { id: 'prd_gluten_free_loaf', name: 'Gluten-Free Loaf', price: 1100, desc: 'Buckwheat + teff blend.', outOfStock: true },
+  ];
+  for (const p of products) {
+    await db.query(
+      `insert into products (id, org_id, name, description, price_cents, currency, in_stock, category)
+       values ($1,$2,$3,$4,$5,'USD',$6,$7) on conflict (id) do nothing`,
+      [p.id, orgId, p.name, p.desc, p.price, !('outOfStock' in p) || !p.outOfStock, 'bakery'],
+    );
+  }
+
+  const faqs = [
+    { id: 'faq_pickup', q: 'Can I pick up my order?', a: 'Yes — pickup is free during shop hours. Tell us your preferred time and we will have it ready at the counter.' },
+    { id: 'faq_delivery', q: 'Do you offer delivery?', a: 'Local delivery is available within 5 miles for orders over $40. We use a courier same-day for orders placed before noon.' },
+    { id: 'faq_allergens', q: 'Do you have allergen info?', a: 'Every product lists its major allergens. We bake in a kitchen that handles wheat, dairy, eggs, tree nuts, and sesame.' },
+    { id: 'faq_special_diets', q: 'Do you have gluten-free options?', a: 'Yes — our buckwheat loaf and a few rotating pastries are gluten-free. They are baked in a dedicated tray.' },
+  ];
+  for (const f of faqs) {
+    await db.query(
+      `insert into faqs (id, org_id, question, answer, sort_order) values ($1,$2,$3,$4,$5) on conflict (id) do nothing`,
+      [f.id, orgId, f.q, f.a, 10],
+    );
+  }
+
+  const hours = [
+    { weekday: 'mon', closed: true },
+    { weekday: 'tue', open: '07:00', close: '17:00' },
+    { weekday: 'wed', open: '07:00', close: '17:00' },
+    { weekday: 'thu', open: '07:00', close: '17:00' },
+    { weekday: 'fri', open: '07:00', close: '19:00' },
+    { weekday: 'sat', open: '08:00', close: '17:00' },
+    { weekday: 'sun', closed: true },
+  ];
+  for (const h of hours) {
+    await db.query(
+      `insert into business_hours (id, org_id, timezone, weekday, is_closed, open_time, close_time)
+       values ($1,$2,'America/Los_Angeles',$3,$4,$5,$6) on conflict (org_id, weekday) do nothing`,
+      [`hrs_bakery_${h.weekday}`, orgId, h.weekday, 'closed' in h && h.closed, h.open ?? null, h.close ?? null],
+    );
+  }
+
+  // Pre-create a `mock-mode` WhatsApp connection so the dashboard tile shows the demo path.
+  await db.query(
+    `insert into integration_connections (id, org_id, provider, status, config)
+     values ($1,$2,'whatsapp-cloud','disconnected',$3::jsonb) on conflict (org_id, provider) do nothing`,
+    [
+      'int_bakery_whatsapp_mock',
+      orgId,
+      JSON.stringify({ mode: 'mock', phoneNumberId: 'mock-phone-id', businessAccountId: 'waba-bakery-demo' }),
+    ],
+  );
+  await db.query(
+    `insert into integration_connections (id, org_id, provider, status)
+     values ($1,$2,'mock-email','connected') on conflict (org_id, provider) do nothing`,
+    ['int_bakery_mock_email', orgId],
+  );
 }
 
 async function countAll(db: SqlClient): Promise<Record<string, number>> {

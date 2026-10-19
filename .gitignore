@@ -15,3 +15,6 @@ coverage/
 # Local database and temporary artifacts
 /.data/
 /tmp/
+
+# Generated artifacts (PDF exports, Playwright screenshots)
+/output/

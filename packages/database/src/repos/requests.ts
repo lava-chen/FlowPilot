@@ -9,7 +9,7 @@ type Row = Record<string, unknown>;
 export interface CreateRequestInput {
   id: string;
   orgId: string;
-  source: 'email' | 'manual';
+  source: 'email' | 'manual' | 'whatsapp';
   sourceRef: string;
   externalId: string;
   rawFrom: string;

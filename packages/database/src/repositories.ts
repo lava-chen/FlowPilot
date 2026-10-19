@@ -6,6 +6,14 @@ import { TaskOperationsRepo } from './repos/task-operations.js';
 import { ApprovalRepo, WorkflowRunRepo } from './repos/workflow.js';
 import { AuditRepo, CredentialRepo, IntegrationRepo } from './repos/platform.js';
 import { AiProviderSettingsRepo } from './repos/ai-provider-settings.js';
+import {
+  BusinessHoursRepo,
+  FaqRepo,
+  LeadRepo,
+  OutboundActionRepo,
+  ProductRepo,
+} from './repos/outbound.js';
+import { OAuthStateRepo, OAuthTokenRepo, SyncCursorRepo } from './repos/oauth.js';
 
 export interface Repositories {
   organizations: OrganizationRepo;
@@ -22,6 +30,14 @@ export interface Repositories {
   credentials: CredentialRepo;
   integrations: IntegrationRepo;
   aiProviderSettings: AiProviderSettingsRepo;
+  outboundActions: OutboundActionRepo;
+  leads: LeadRepo;
+  products: ProductRepo;
+  faqs: FaqRepo;
+  businessHours: BusinessHoursRepo;
+  oauthStates: OAuthStateRepo;
+  oauthTokens: OAuthTokenRepo;
+  syncCursors: SyncCursorRepo;
 }
 
 export function createRepositories(db: SqlClient): Repositories {
@@ -40,5 +56,13 @@ export function createRepositories(db: SqlClient): Repositories {
     credentials: new CredentialRepo(db),
     integrations: new IntegrationRepo(db),
     aiProviderSettings: new AiProviderSettingsRepo(db),
+    outboundActions: new OutboundActionRepo(db),
+    leads: new LeadRepo(db),
+    products: new ProductRepo(db),
+    faqs: new FaqRepo(db),
+    businessHours: new BusinessHoursRepo(db),
+    oauthStates: new OAuthStateRepo(db),
+    oauthTokens: new OAuthTokenRepo(db),
+    syncCursors: new SyncCursorRepo(db),
   };
 }

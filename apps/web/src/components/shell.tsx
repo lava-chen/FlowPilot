@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useRouter } from 'next/navigation';
-import { LayoutDashboard, Inbox, Columns3, Activity, LogOut, Settings2, Sparkles, ChevronDown } from 'lucide-react';
+import { LayoutDashboard, Inbox, Columns3, Activity, LogOut, Settings2, Sparkles, ChevronDown, Send } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { apiFetch } from '@/lib/api-client';
 
 const NAV = [
   { href: '/overview', label: 'Overview', icon: LayoutDashboard },
   { href: '/inbox', label: 'AI Inbox', icon: Inbox },
+  { href: '/outbox', label: 'Outbox', icon: Send },
   { href: '/tasks', label: 'Tasks', icon: Columns3 },
   { href: '/activity', label: 'Activity', icon: Activity },
 ];

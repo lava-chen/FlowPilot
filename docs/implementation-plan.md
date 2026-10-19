@@ -55,6 +55,39 @@ Status legend: `[x]` done and verified · `[~]` partial · `[ ]` not started.
       TypeScript through `tsx`; it has no separate compiled build target in v0.1.
 - [x] Manual browser check of all four pages against the local PGlite-backed web process.
 
+## Phase 1 — WhatsApp Business (2026-10-18)
+
+- [x] Domain contracts — `OutboundAction`, `OutboundActionStatus`, `OutboundActionChannel`,
+      `outbound-action-state.ts` pure state machine, `integration-contracts.ts` (WhatsApp
+      envelope + reply generation), `outbounds:read|write|decide` agent scopes.
+- [x] Migration `0005_whatsapp_outbound.sql`: `outbound_actions`, `outbound_action_events`,
+      `products`, `faqs`, `business_hours`, `leads` (+ RLS policies when enabled).
+- [x] Repos: `OutboundActionRepo` (with `listEvents` for the activity drawer), `LeadRepo`,
+      `ProductRepo`, `FaqRepo`, `BusinessHoursRepo`.
+- [x] `IntegrationService` — catalog projection (`demo | mock | not_configured | connected
+      | error | reauth_required`) plus connection CRUD with secret redaction.
+- [x] `OutboundActionService` — full lifecycle, dedupe-key idempotency, human-only approval
+      gate, channel-driver dispatch, append-only event log.
+- [x] WhatsApp adapter: `verifyWhatsAppSignature` (HMAC-SHA256, timing-safe), handshake
+      verifier, payload normalizer, `MockWhatsAppChannel` + `WhatsAppCloudChannel`
+      (5xx/429 = retryable; 4xx = permanent), `handleWhatsAppEvents` reusing
+      `ingestAndDraft`.
+- [x] Web routes: `GET/POST /api/webhooks/whatsapp/[orgSlug]`, `GET/PUT/DELETE
+      /api/integrations/[provider]`, full `outbound-actions` CRUD, `POST
+      /api/integrations/whatsapp/simulate`, `POST /api/whatsapp/generate-reply`.
+- [x] Dashboard: catalog list at `/settings/integrations`, full WhatsApp config +
+      simulator at `/settings/integrations/whatsapp`, Outbox at `/outbox` with per-action
+      timeline.
+- [x] Retail Bakery demo seed (`FLOWPILOT_SEED_BAKERY=true`) with product catalog,
+      FAQs, weekly hours.
+- [x] Tests: 38 new (signature/replay/handshake/normalizer/Mock/Cloud channels,
+      OutboundActionService lifecycle/dedupe/agent-blocking/cross-org, deterministic
+      Bakery reply generator grounding + FAQ fallback).
+- [x] `pnpm typecheck`, `pnpm test` (122/122), `pnpm build` all green.
+- [ ] Live Meta verification: **Blocked** — requires Meta developer account, public webhook
+      URL, and App Secret / Verify Token / Access Token / Phone Number ID. See
+      `docs/phase-1-whatsapp.md` for the exact operational steps.
+
 ## Customer-fit follow-up (2026-10-16)
 
 - [x] `0003_collaboration.sql`: effort estimates, tenant-scoped checklist/comments/links/time,

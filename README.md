@@ -175,6 +175,14 @@ repository or write a task status directly — see `docs/architecture.md`.
 
 Being explicit about this, because it matters for the demo:
 
+- **WhatsApp Business** is wired end-to-end. The webhook receiver verifies the HMAC-SHA256
+  signature and the `hub.mode=subscribe` handshake against the org's stored App Secret, parses
+  the Meta envelope, and feeds messages + statuses through the unified pipeline. The Bakery
+  reply analyzer grounds every claim against the catalog (no invented stock / prices) and queues
+  drafts to a human approver. **Live Meta verification is blocked** until a Meta developer
+  account + public webhook URL are available — see `docs/phase-1-whatsapp.md` for the exact
+  operational steps. The mock driver runs every test, the demo simulator, and any
+  environment without credentials.
 - **AI analysis** defaults to a deterministic rule-based analyzer. Organization owners/admins can
   configure an OpenAI Chat Completions-compatible endpoint in **AI settings**: base URL, model,
   and API key. The key is encrypted at rest using a key derived from `SESSION_SECRET`, never sent
@@ -183,9 +191,8 @@ Being explicit about this, because it matters for the demo:
   `FLOWPILOT_AI_BASE_URL`, `FLOWPILOT_AI_API_KEY`, and `FLOWPILOT_AI_MODEL` as the server-wide
   fallback. Real inbox analysis sends the request text and organization candidate names to the
   configured provider; responses are schema-checked and candidate IDs/evidence are validated.
-- **Email** is still a mock adapter triggered from the UI. Gmail/Slack OAuth and webhook ingestion,
-  ClickUp/Hubstaff synchronization, Google Drive/Figma uploads, background notifications and
-  scheduled reports are not connected.
+- **Email** is still a mock adapter triggered from the UI. Outlook OAuth + Microsoft Graph, real
+  WhatsApp Cloud API tests, and click-through integrations are not yet connected.
 - **Coordination** includes estimates, dependencies, checklists, comments, HTTP(S) links, time
   entries, and expiring client-review links. Links point to external files; FlowPilot does not
   upload or version files. Client reviews require a manager to copy/send the URL manually.
