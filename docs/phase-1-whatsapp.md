@@ -61,8 +61,9 @@ human role can move across `pending_approval → approved`.
   composable scopes; dedupe keys on `(org, channel, dedupeKey)` are enforced by
   the database `unique` constraint.
 - `IntegrationService` — connection catalog projection (`demo | mock |
-  not_configured | connected | error | reauth_required`). Secret redaction
-  before persistence.
+  not_configured | connected | error | reauth_required`). Secrets are stored
+  encrypted in `integration_secrets` and read back only server-side (Phase 3;
+  before that they were dropped before persistence).
 - `WhatsAppReplyService` — deterministic Bakery reply generator that:
   - grounds every claim against the catalog (no invented stock / prices)
   - classifies intent (order / product_question / hours_location / pricing /
@@ -131,9 +132,12 @@ The code is wired and tested. The remaining work is operational:
    `https://<host>/api/webhooks/whatsapp/<org-slug>`.
 3. **App Secret / Verify Token / Access Token / Phone Number ID** saved through
    `PUT /api/integrations/whatsapp-cloud`. The dashboard does NOT echo these
-   back. They live server-side, encrypted (at-rest encryption for `accessToken`
-   can be wired through the existing `AI_PROVIDER` crypto path — extension
-   point, not in scope for Phase 1).
+   back. As of [Phase 3](phase-3-integration-hardening.md) they are encrypted at
+   rest in the `integration_secrets` table under per-secret AES-GCM keys.
+   **Note:** at the `398bb8d` commit this was not true — `redactConfig()` deleted
+   `accessToken` and `appSecret` before persisting, so the webhook signature check
+   always failed and sends silently used the mock. Phase 3 fixed it; if you are on
+   `398bb8d` or earlier, real WhatsApp delivery cannot work.
 4. **Webhook verification in Meta dashboard.** Subscribe to the URL above;
    paste the verify token exactly. The `hub.mode=subscribe` handshake is
    handled by the same route.
@@ -144,9 +148,11 @@ The code is wired and tested. The remaining work is operational:
    `failed`. The mock driver scripts the same error code via
    `scripted.set(dedupeKey, { ok: false, errorCode: '131030', ... })`.
 
-When the `accessToken` is present in the connection config, the **Send now**
-button automatically switches from `MockWhatsAppChannel` to
-`WhatsAppCloudChannel`. There is no other change.
+When the org has a stored access token, the **Send now** button uses
+`WhatsAppCloudChannel`; with no credentials at all it uses `MockWhatsAppChannel`
+for the offline demo. Since [Phase 3](phase-3-integration-hardening.md) a
+*half-configured* integration (config present but no token) raises an error
+instead of silently downgrading to the mock.
 
 ## Deliberate non-goals (Phase 1)
 

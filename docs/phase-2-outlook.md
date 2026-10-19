@@ -9,6 +9,14 @@ The single-line summary, again, is unchanged: **FlowPilot does not bypass the
 human approval gate.** A real Outlook-sourced email goes through the same
 ingestion, analysis, draft, approve, send loop; only the *transport* is real now.
 
+> **Correction (Phase 3).** This document originally described the approve →
+> send loop as working end to end. At the `398bb8d` commit it did not:
+> `tryCreateDraft` returned `false` unconditionally, so a synced email produced
+> an inbox row and no outbound action, and the send route handed every
+> non-WhatsApp provider to `MockWhatsAppChannel`. Both are fixed in
+> [Phase 3](phase-3-integration-hardening.md). The OAuth, delta-sync, and
+> `OutlookGraphChannel` sections below were accurate as written.
+
 ## What shipped
 
 ### Domain (`packages/domain`)
@@ -153,7 +161,7 @@ demo already exercises.
 
 ## What is required to talk to the real Microsoft Graph API
 
-The code is wired and tested. What's still operational:
+The transport code is wired and tested. What's still operational:
 
 1. **Microsoft Entra app registration.** Until that exists,
    `live verification: blocked`. The app cannot ship a "Connect" button in

@@ -207,8 +207,16 @@ Guards:
   `outbounds:decide` capability that no agent scope unlocks — identical pattern to
   `approvals:decide`.
 - `approved → sending` and `sending → sent | failed` are system-only; the dispatcher is the
-  `ChannelDriver` interface, which has both `MockWhatsAppChannel` (offline / tests) and
-  `WhatsAppCloudChannel` (real Meta Cloud API).
+  `ChannelDriver` interface, which has both mock and live implementations per provider
+  (`MockWhatsAppChannel` / `WhatsAppCloudChannel`, `MockOutlookGraphChannel` /
+  `OutlookGraphChannel`).
+
+Concurrency: every status write is a **compare-and-swap**. `OutboundActionRepo.updateStatus`
+accepts an `expectedStatus` and adds `and status = $n` to its `where` clause; a lost race returns
+`null` rather than writing. Without this, two concurrent senders both read `approved`, both pass
+the in-process transition check, and both call the provider — the customer gets the message twice.
+A lost CAS surfaces to the caller as a `ValidationError` telling them to refresh, never as a
+silent no-op.
 
 Idempotency is enforced by `unique (org_id, channel, dedupe_key)` on `outbound_actions`; the
 unique key is what makes a webhook redelivery safe. The webhook signature verifier
@@ -216,3 +224,34 @@ unique key is what makes a webhook redelivery safe. The webhook signature verifi
 `timingSafeEqual` — see `packages/integrations/src/signature.ts`.
 
 See `docs/phase-1-whatsapp.md` for the Phase 1 implementation report.
+
+## 12. Integration credential storage (v0.3)
+
+Provider credentials do **not** live in `integration_connections.config`. That blob is echoed to
+the dashboard, so it carries only non-secret settings (`phoneNumberId`, `verifyToken`, `apiBase`).
+
+Secrets live in `integration_secrets` (migration `0008`), one row per `(org, provider,
+secret_name)`, mirroring the `oauth_tokens` shape from migration `0007`:
+
+```text
+integration_secrets (org_id, provider, secret_name) -> ciphertext, iv, auth_tag
+```
+
+Each `SecretContext` derives an independent AES-256-GCM key from `SESSION_SECRET`. There are now
+five: `aiProvider`, `oauthAccess`, `oauthRefresh`, `integrationAccessToken`,
+`integrationAppSecret`. The split is load-bearing — a leaked Meta access token must not decrypt
+an Entra refresh token, and both live in the same database read by different subsystems.
+
+`IntegrationService.readSecret(orgId, provider, name)` is the only path back to plaintext. It is
+**not** reachable from any HTTP route; its two callers are the WhatsApp webhook (which resolved
+the org from the webhook URL) and the outbound dispatcher (which resolved it from an
+authenticated session). It returns `null` when a secret was never configured, and *throws* when
+a stored secret cannot be decrypted — returning `''` would push callers back into mock delivery,
+which is the failure this store exists to eliminate.
+
+Rule that follows from the above: **a misconfigured integration must fail loudly.** A mock driver
+is legitimate only when the org has no stored credentials at all (the offline demo). If
+configuration exists but is incomplete, the send route raises rather than downgrading, because a
+green "sent" against a mock is indistinguishable from real delivery.
+
+See `docs/phase-3-integration-hardening.md`.

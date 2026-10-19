@@ -83,10 +83,41 @@ Status legend: `[x]` done and verified · `[~]` partial · `[ ]` not started.
 - [x] Tests: 38 new (signature/replay/handshake/normalizer/Mock/Cloud channels,
       OutboundActionService lifecycle/dedupe/agent-blocking/cross-org, deterministic
       Bakery reply generator grounding + FAQ fallback).
-- [x] `pnpm typecheck`, `pnpm test` (122/122), `pnpm build` all green.
+- [x] `pnpm typecheck`, `pnpm test` (183/183), `pnpm build` all green.
 - [ ] Live Meta verification: **Blocked** — requires Meta developer account, public webhook
       URL, and App Secret / Verify Token / Access Token / Phone Number ID. See
       `docs/phase-1-whatsapp.md` for the exact operational steps.
+
+## Phase 3 — Integration Hardening (2026-10-19)
+
+Fixes three defects found in `398bb8d` by external review. See
+`docs/phase-3-integration-hardening.md` for the full write-up.
+
+- [x] P0 — WhatsApp credentials are encrypted at rest in `integration_secrets`
+      (migration `0008`), written by `IntegrationService.upsert` and read back only
+      through `readSecret()`. Previously `redactConfig()` deleted them before
+      persistence, so webhook signature verification always 401'd and sends silently
+      used the mock.
+- [x] P0 — Two new `SecretContext` keys (`integrationAccessToken`,
+      `integrationAppSecret`) so a leaked Meta credential reveals nothing about an
+      Entra token and vice versa.
+- [x] P0 — The send route dispatches per provider: `whatsapp-cloud` →
+      `WhatsAppCloudChannel`, `outlook-graph` → `OutlookGraphChannel` (token via the
+      OAuth service). A half-configured integration now raises instead of silently
+      downgrading to a mock.
+- [x] P0 — `OutlookSyncService.tryCreateDraft` implemented; synced mail produces an
+      `OutboundAction` draft on the email channel with a deterministic
+      `outlook-graph:reply:<messageId>` dedupe key.
+- [x] P1 — `OutboundActionRepo.updateStatus` supports `expectedStatus`, making every
+      status write a compare-and-swap. Concurrent sends deliver exactly once; the
+      loser receives an actionable error.
+- [x] 28 new tests (183/183 across 19 files), each mutation-verified to fail against
+      the pre-fix behaviour.
+- [x] Corrected overstated "real send" claims in `phase-1-whatsapp.md` and
+      `phase-2-outlook.md`.
+- [ ] Live Meta + live Entra verification: **Blocked** on credentials.
+- [ ] Background job runner (durable queue, retry, recovery): **not started** —
+      new subsystem, deliberately deferred to keep this change reviewable.
 
 ## Customer-fit follow-up (2026-10-16)
 

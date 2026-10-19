@@ -16,6 +16,7 @@ import {
 import type { OutlookMessageEvent } from '@flowpilot/domain';
 import { IngestionService } from './ingestion.service.js';
 import { WorkflowService } from './workflow.service.js';
+import type { OutboundActionService } from './outbound-action.service.js';
 
 /**
  * Outlook (Microsoft Graph) delta-query mailbox sync.
@@ -33,6 +34,12 @@ export interface OutlookSyncDeps {
   db: FlowPilotDb;
   audit: AuditService;
   oauth: OAuthService;
+  /**
+   * Used to draft the reply. Optional so the sync can run in contexts that only care about
+   * ingestion (tests, the connect-check flow); when absent, sync still populates the inbox and
+   * simply reports `drafts: 0`.
+   */
+  outbounds?: OutboundActionService;
   /** Optional provider config; when absent we fall back to Graph's public endpoint. */
   graphProvider?: OutlookProviderConfig;
 }
@@ -205,7 +212,7 @@ export class OutlookSyncService {
           const ingestResult = await ingestionSvc.ingest(sysActor, eventToNormalized(provider, evt));
           ingested += 1;
           // Draft creation is a follow-up; never fail the sync on it.
-          if (await this.tryCreateDraft(actor, ingestResult.request.id)) drafts += 1;
+          if (await this.tryCreateDraft(actor, ingestResult.request.id, evt)) drafts += 1;
         } catch (err) {
           errors.push({ externalId: raw.id, error: err instanceof Error ? err.message : String(err) });
         }
@@ -280,12 +287,47 @@ export class OutlookSyncService {
   }
 
   /**
-   * Best-effort draft creation. Sync stays idempotent and never fails on a draft problem —
-   * the inbox shows the request row, and a reviewer can create the task draft from there.
-   * We keep this simple so the sync hot path doesn't pull in the entire task pipeline.
+   * Draft a reply for a freshly ingested Outlook message.
+   *
+   * Creates the outbound action in `draft` and nothing further — a human still has to submit and
+   * approve it before anything is sent, which is the whole point of routing mail through the same
+   * approval gate as WhatsApp. The draft itself is safe to create automatically because it has
+   * no external effect.
+   *
+   * Why this used to be a stub: it originally returned `false` unconditionally because the sync
+   * service had no dependency on `OutboundActionService` and importing it risked a cycle. The
+   * dependency is injected instead, so the layering rule (core never imports the web app's
+   * channel wiring) still holds.
+   *
+   * Failures are swallowed by the caller's try/catch: a missing draft must not fail the sync.
    */
-  private async tryCreateDraft(_actor: Actor, _requestId: string): Promise<boolean> {
-    return false;
+  private async tryCreateDraft(actor: Actor, requestId: string, evt: OutlookMessageEvent): Promise<boolean> {
+    const outbounds = this.deps.outbounds;
+    if (!outbounds) return false;
+
+    // No recipient address on the thread means there is nowhere to reply; skip rather than
+    // create an action that can never be sent.
+    const replyTo = evt.from.trim();
+    if (!replyTo) return false;
+
+    const request = await this.deps.db.repos.requests.findById(actor.orgId, requestId);
+    if (!request) return false;
+
+    // Deterministic per (message, recipient) so a re-sync that re-ingests the same message
+    // returns the existing draft instead of creating a second one. Mirrors the WhatsApp
+    // generator's `whatsapp:reply:<externalId>` convention.
+    const dedupeKey = `outlook-graph:reply:${evt.externalId}`;
+
+    await outbounds.createDraft(actor, {
+      channel: 'email',
+      provider: 'outlook-graph',
+      to: replyTo,
+      subject: evt.subject ? `Re: ${evt.subject.replace(/^re:\s*/i, '')}` : 'Re: your message',
+      body: buildAcknowledgement(evt),
+      requestId,
+      dedupeKey,
+    });
+    return true;
   }
 
   private buildListUrl(folder: 'inbox' | 'junkemail', pageSize: number): string {
@@ -334,3 +376,27 @@ function redactUrl(url: string): string {
 
 // Keep `OUTLOOK_DEFAULT_SCOPES` re-exported so apps can compose their own provider config.
 export { OUTLOOK_DEFAULT_SCOPES };
+
+/**
+ * Placeholder body for the auto-drafted Outlook reply.
+ *
+ * Deliberately says nothing about the substance of the message. The Bakery reply generator
+ * (Phase 1) grounds its answers in the product/FAQ catalog; an email from an unknown sender has
+ * no such grounding, so inventing a commitment ("your order ships Tuesday") would be exactly the
+ * failure mode the catalog grounding exists to prevent. A human edits this in the Outbox before
+ * approving — the draft exists to make the reply workflow reachable, not to answer the mail.
+ */
+function buildAcknowledgement(evt: OutlookMessageEvent): string {
+  const who = evt.fromName?.trim() || evt.from;
+  const subject = evt.subject && evt.subject !== '(no subject)' ? evt.subject : 'your message';
+  return [
+    `Hi ${who},`,
+    '',
+    `Thanks for your email about "${subject}". We have received it and a member of the team will reply shortly.`,
+    '',
+    'If your message is time-sensitive, please reply to this email so it reaches us directly.',
+    '',
+    'Best regards,',
+    'FlowPilot',
+  ].join('\n');
+}

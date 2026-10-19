@@ -191,8 +191,15 @@ Being explicit about this, because it matters for the demo:
   `FLOWPILOT_AI_BASE_URL`, `FLOWPILOT_AI_API_KEY`, and `FLOWPILOT_AI_MODEL` as the server-wide
   fallback. Real inbox analysis sends the request text and organization candidate names to the
   configured provider; responses are schema-checked and candidate IDs/evidence are validated.
-- **Email** is still a mock adapter triggered from the UI. Outlook OAuth + Microsoft Graph, real
-  WhatsApp Cloud API tests, and click-through integrations are not yet connected.
+- **Email** intake runs two ways: a mock adapter triggered from the UI, and a real Microsoft Graph
+  delta-query sync (PKCE OAuth, token refresh, junk filtering, cursor persistence). Synced mail
+  produces an inbound request plus a draft `OutboundAction` on the email channel, which a human
+  approves before Graph `sendMail` delivers it. Live verification against a real tenant is
+  blocked on Entra credentials — see `docs/phase-2-outlook.md`.
+- **Provider credentials** (WhatsApp access token / app secret, Microsoft OAuth tokens) are
+  encrypted at rest, each under an independently derived key, and are never written to the
+  browser-facing `integration_connections.config`. A misconfigured integration fails loudly
+  instead of silently falling back to a mock driver — see `docs/phase-3-integration-hardening.md`.
 - **Coordination** includes estimates, dependencies, checklists, comments, HTTP(S) links, time
   entries, and expiring client-review links. Links point to external files; FlowPilot does not
   upload or version files. Client reviews require a manager to copy/send the URL manually.

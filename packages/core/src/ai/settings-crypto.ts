@@ -19,6 +19,11 @@ const CONTEXTS = {
   aiProvider: 'flowpilot:organization-ai-provider-key:v1\0',
   oauthAccess: 'flowpilot:organization-oauth-access-token:v1\0',
   oauthRefresh: 'flowpilot:organization-oauth-refresh-token:v1\0',
+  // Provider credentials for non-OAuth integrations (WhatsApp Cloud API). Kept separate from
+  // `oauthAccess` so leaking an Entra token never exposes a Meta token and vice versa — the
+  // two live in the same database and are read by different subsystems.
+  integrationAccessToken: 'flowpilot:integration-access-token:v1\0',
+  integrationAppSecret: 'flowpilot:integration-app-secret:v1\0',
 } as const;
 
 export type SecretContext = keyof typeof CONTEXTS;

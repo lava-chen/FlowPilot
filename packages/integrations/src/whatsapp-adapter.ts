@@ -158,11 +158,24 @@ export async function handleWhatsAppEvents(
     if (s.status === 'sent' || s.status === 'delivered' || s.status === 'read') nextStatus = 'sent';
     else if (s.status === 'failed') nextStatus = 'failed';
     if (nextStatus && (action.status === 'sending' || action.status === 'approved')) {
+      // CAS on the observed status: Meta retries status webhooks, so two deliveries of the same
+      // `sent` event can land concurrently. Only the one that still matches wins the write.
       const updated = await core.db.repos.outboundActions.updateStatus(action.orgId, action.id, nextStatus, {
+        expectedStatus: action.status,
         externalMessageId: action.externalMessageId ?? s.externalId,
         errorMessage: nextStatus === 'failed' ? `${s.errorTitle ?? 'Failed'}: ${s.errorCode ?? ''}` : null,
         sentAt: nextStatus === 'sent' ? s.at : undefined,
       });
+      if (!updated) {
+        // Lost the race — another delivery already recorded this transition.
+        statuses.push({
+          externalId: s.externalId,
+          actionId: action.id,
+          status: s.status,
+          errorMessage: null,
+        });
+        continue;
+      }
       await core.db.repos.outboundActions.recordEvent({
         id: `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
         orgId: action.orgId,
